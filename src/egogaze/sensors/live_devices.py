@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-import subprocess
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -62,40 +61,11 @@ def _sysfs_discover_camera(target_name: str) -> Optional[str]:
     return None
 
 
-def _is_video_capture_node(device_path: str) -> bool:
-    try:
-        res = subprocess.run(
-            ["v4l2-ctl", "--device", device_path, "--all"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        txt = res.stdout + res.stderr
-        return "Device Caps" in txt and "Video Capture" in txt
-    except Exception:
-        return False
-
-
 def discover_v4l2_camera(target_name: str, fallback: Optional[str] = None) -> Optional[str]:
-    """Resolve current /dev/videoX dynamically (sysfs primary -> v4l2-ctl secondary -> fallback)."""
+    """Resolve current /dev/videoX dynamically via pure sysfs discovery, with optional static fallback."""
     sysfs_path = _sysfs_discover_camera(target_name)
     if sysfs_path:
         return sysfs_path
-    try:
-        res = subprocess.run(["v4l2-ctl", "--list-devices"], capture_output=True, text=True, timeout=3)
-        if res.stdout.strip():
-            for block in res.stdout.strip().split("\n\n"):
-                lines = [ln.strip() for ln in block.split("\n") if ln.strip()]
-                if not lines or target_name not in lines[0]:
-                    continue
-                candidates = [ln for ln in lines[1:] if ln.startswith("/dev/video")]
-                for cand in candidates:
-                    if _is_video_capture_node(cand):
-                        return cand
-                if candidates:
-                    return candidates[0]
-    except Exception:
-        pass
     if fallback and Path(fallback).exists():
         return fallback
     return None

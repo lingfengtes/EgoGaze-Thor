@@ -34,7 +34,7 @@ sensors:
   audio_chunk_frames: 1024
 
 gaze:
-  model_path: "data/models/gazenet/Iter_10_GazeNet.pt"
+  model_path: "data/models/gazenet/gazenet.pt"
   trt_engine_path: "data/cache/gazenet_fp16.engine"
   use_tensorrt: true
   target_hz: 25.0
