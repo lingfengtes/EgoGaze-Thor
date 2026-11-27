@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "egogaze"
+version = "0.1.0"
+description = "EgoGaze-Thor: Egocentric Gaze-Guided Open-Vocabulary Multimodal Perception & Voice Agent on Jetson Thor"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23",
+    "pydantic>=2.0",
+    "PyYAML>=6.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
+    "opencv-python>=4.8",
+    "scipy>=1.11",
+    "scikit-learn>=1.3",
+]
+
+[project.scripts]
+egogaze = "egogaze.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

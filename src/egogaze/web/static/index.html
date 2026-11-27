@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EgoGaze-Thor · Multimodal Perception Console</title>
+  <style>
+    :root {
+      --bg: #090d14;
+      --panel: #111824;
+      --panel-2: #172030;
+      --border: #233046;
+      --text: #e6edf7;
+      --muted: #8a9bb5;
+      --accent: #38bdf8;
+      --green: #34d399;
+      --amber: #fbbf24;
+      --red: #f87171;
+      --purple: #a78bfa;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 18px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand h1 { font-size: 16px; font-weight: 700; letter-spacing: 0.4px; }
+    .pill {
+      font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+      background: rgba(56,189,248,0.14); color: var(--accent); border: 1px solid rgba(56,189,248,0.35);
+      white-space: nowrap;
+    }
+    .pill.green { background: rgba(52,211,153,0.14); color: var(--green); border-color: rgba(52,211,153,0.35); }
+    .pill.amber { background: rgba(251,191,36,0.14); color: var(--amber); border-color: rgba(251,191,36,0.35); }
+    .pill.red { background: rgba(248,113,113,0.14); color: var(--red); border-color: rgba(248,113,113,0.35); }
+    .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    button, select, input {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: #0ea5e9; border-color: #0ea5e9; color: #05101a; font-weight: 700; }
+    button.active-green { background: rgba(52,211,153,0.2); border-color: var(--green); color: var(--green); font-weight: 600; }
+    button.danger { background: rgba(248,113,113,0.2); border-color: var(--red); color: var(--red); font-weight: 600; }
+
+    /* Main 2-column layout: Left = Perception + Analytics, Right = Full-Height Voice & LLM Dialogue */
+    .workspace {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 1.48fr 1fr;
+      gap: 12px;
+      padding: 12px 16px;
+    }
+    .left-col {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+    }
+    .bottom-analytics {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr;
+      gap: 12px;
+      min-height: 0;
+      flex: 1;
+    }
+    .right-col {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .card-head {
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      flex-shrink: 0;
+      gap: 8px;
+    }
+    .card-body {
+      padding: 12px 14px;
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+    }
+
+    .video-wrap {
+      position: relative;
+      background: #05080e;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      aspect-ratio: 16 / 9;
+      max-height: 46vh;
+      width: 100%;
+    }
+    .video-wrap img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .eyes-pip {
+      position: absolute; right: 10px; bottom: 10px; width: 200px;
+      border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.22);
+      background: #000; box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+    }
+    .eyes-pip img { width: 100%; display: block; }
+    .calib-overlay {
+      display: none; position: absolute; inset: 0; background: rgba(7,10,18,0.84);
+      z-index: 20; align-items: center; justify-content: center; flex-direction: column;
+    }
+    .calib-overlay.active { display: flex; }
+    .calib-dot {
+      position: absolute; width: 24px; height: 24px; border-radius: 50%;
+      background: var(--red); border: 3px solid #fff; transform: translate(-50%, -50%);
+      box-shadow: 0 0 18px var(--red);
+    }
+
+    .metrics-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; flex-shrink: 0; }
+    .metric-box {
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+    }
+    .metric-box .k { font-size: 10px; color: var(--muted); text-transform: uppercase; }
+    .metric-box .v { font-size: 15px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+    .cand-row {
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px;
+    }
+    .cand-row.selected { border-color: var(--amber); background: rgba(251,191,36,0.08); }
+    .cand-top { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+    .bars { display: grid; grid-template-columns: 52px 1fr 34px; gap: 3px 6px; align-items: center; font-size: 10px; color: var(--muted); }
+    .bar-bg { height: 6px; background: #0c121d; border-radius: 4px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 4px; transition: width 0.25s ease; }
+
+    /* Right Column: Full-height Voice Assistant */
+    .voice-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--panel-2);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .vu-wrap {
+      flex: 1;
+      min-width: 70px;
+      height: 8px;
+      background: #0a101b;
+      border-radius: 4px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    .vu-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #34d399, #38bdf8, #fbbf24); transition: width 0.08s linear; }
+    .asr-banner {
+      padding: 7px 14px;
+      background: rgba(56,189,248,0.08);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--accent);
+      min-height: 31px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .chat-box {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .msg { padding: 10px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.5; word-break: break-word; }
+    .msg.user {
+      background: rgba(56,189,248,0.16);
+      border: 1px solid rgba(56,189,248,0.34);
+      align-self: flex-end;
+      max-width: 86%;
+      border-bottom-right-radius: 3px;
+    }
+    .msg.assistant {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      align-self: flex-start;
+      max-width: 94%;
+      border-bottom-left-radius: 3px;
+    }
+    .msg-meta { font-size: 10px; color: var(--muted); margin-bottom: 4px; display: flex; gap: 6px; align-items: center; }
+    .fsom-inline { display: grid; grid-template-columns: 1.25fr 1fr; gap: 6px; margin-top: 8px; }
+    .fsom-inline img { width: 100%; border-radius: 6px; border: 1px solid var(--border); background: #000; }
+
+    .chat-footer {
+      padding: 10px 14px 12px;
+      border-top: 1px solid var(--border);
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .quick-prompts { display: flex; gap: 6px; flex-wrap: wrap; }
+    .quick-prompts button { font-size: 11px; padding: 4px 8px; color: var(--muted); }
+    .query-bar { display: flex; gap: 8px; }
+    .query-bar input { flex: 1; cursor: text; padding: 9px 12px; font-size: 13px; }
+
+    .trace-list { display: flex; flex-direction: column; gap: 6px; }
+    .trace-item { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 11px; }
+    .waterfall { display: flex; height: 7px; border-radius: 4px; overflow: hidden; margin-top: 4px; background: #0c121d; }
+
+    @media (max-width: 1080px) {
+      body { overflow: auto; }
+      .workspace { grid-template-columns: 1fr; }
+      .bottom-analytics { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>EgoGaze-Thor</h1>
+      <span id="modePill" class="pill">MODE</span>
+      <span id="gazeStatePill" class="pill amber">GAZE: --</span>
+    </div>
+    <div class="toolbar">
+      <button id="btnModGaze" class="active-green" onclick="toggleModality('gaze')" title="开关眼动注视点与视线融合信号">👁 眼动: ON</button>
+      <button id="btnModVision" class="active-green" onclick="toggleModality('vision')" title="开关视觉检测与追踪信号">📷 视觉: ON</button>
+      <button id="btnModVoice" class="active-green" onclick="toggleModality('voice')" title="开关语音识别输入信号">🎙 语音: ON</button>
+      <select id="boxModeSelect" onchange="switchBoxMode(this.value)" title="检测框显示模式">
+        <option value="all">检测框: 全部显示</option>
+        <option value="gaze_only">检测框: 仅注视处</option>
+        <option value="off">检测框: 完全隐藏</option>
+      </select>
+      <button id="btnHeatmap" onclick="toggleOpt('heatmap')">热力图: ON</button>
+      <button id="btnSom" onclick="toggleOpt('som')">Set-of-Mark: ON</button>
+      <select id="backendSelect" onchange="switchBackend(this.value)"></select>
+      <button id="btnCalib" onclick="startCalibration()">9点标定</button>
+      <button id="btnReconn" onclick="reconnectCameras()" title="USB 抖动断连时立即重扫 /dev/videoX">🔄 重连相机</button>
+      <button id="btnRecord" onclick="toggleRecord()">● 录制</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <!-- LEFT COLUMN: Video + Grounding + Latency -->
+    <div class="left-col">
+      <section class="card" style="flex-shrink:0;">
+        <div class="card-head">
+          <span>Egocentric Perception Stream (System 1)</span>
+          <span id="streamHint" style="text-transform:none; font-weight:500;">Live 模式点击物体可直接 HUD 锁定/解锁</span>
+        </div>
+        <div class="card-body" style="overflow:visible;">
+          <div class="video-wrap" id="videoWrap">
+            <img id="sceneImg" src="/stream/scene" alt="Scene Stream" />
+            <div class="eyes-pip">
+              <img src="/stream/eyes" alt="Dual Eye Stream" />
+            </div>
+            <div class="calib-overlay" id="calibOverlay">
+              <div class="calib-dot" id="calibDot"></div>
+              <div style="z-index:25; text-align:center; background:rgba(17,24,36,0.94); padding:14px 18px; border-radius:10px; border:1px solid var(--border);">
+                <div id="calibMsg" style="font-size:14px; font-weight:600; margin-bottom:10px;">请注视红点并点击采集</div>
+                <button class="primary" onclick="captureCalibSample()">采集当前点</button>
+                <button onclick="cancelCalibration()" style="margin-left:8px;">取消</button>
+              </div>
+            </div>
+          </div>
+          <div class="metrics-row">
+            <div class="metric-box"><div class="k">Gaze Rate</div><div class="v" id="mGazeHz">-- Hz</div></div>
+            <div class="metric-box"><div class="k">Vision FPS</div><div class="v" id="mVisFps">-- FPS</div></div>
+            <div class="metric-box"><div class="k">Fixation Dwell</div><div class="v" id="mDwell">0 ms</div></div>
+            <div class="metric-box"><div class="k">Scene Objects</div><div class="v" id="mObjCount">0</div></div>
+          </div>
+        </div>
+      </section>
+
+      <div class="bottom-analytics">
+        <!-- Probabilistic Grounding Breakdown -->
+        <section class="card">
+          <div class="card-head">
+            <span>Probabilistic Grounding</span>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <select id="fusionModeSelect" onchange="switchFusionMode(this.value)" style="padding:2px 6px; font-size:10px;">
+                <option value="probabilistic">Probabilistic (Ours)</option>
+                <option value="heuristic_baseline">Heuristic Baseline</option>
+                <option value="speech_only">Speech-Only</option>
+                <option value="gaze_only">Gaze-Only</option>
+              </select>
+              <span id="gazeRelPill" class="pill green">w_g = --</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="groundingMeta" style="font-size:11px; color:var(--muted);">
+              等待多模态指代指令，展示 Gaze / Spatial / Semantic / Temporal 融合拆解…
+            </div>
+            <div id="candList" style="display:flex; flex-direction:column; gap:7px;"></div>
+          </div>
+        </section>
+
+        <!-- Latency Waterfall -->
+        <section class="card">
+          <div class="card-head">
+            <span>Latency &amp; Quantization</span>
+            <span id="vlmBackendTag" style="color:var(--purple); text-transform:none;">VLM: --</span>
+          </div>
+          <div class="card-body">
+            <div style="display:flex; gap:10px; font-size:10px; color:var(--muted);">
+              <span><b style="color:#38bdf8;">■</b> Fusion</span>
+              <span><b style="color:#a78bfa;">■</b> TTFT</span>
+              <span><b style="color:#34d399;">■</b> Total</span>
+            </div>
+            <div class="trace-list" id="traceList">
+              <div style="font-size:11px; color:var(--muted);">对话后将展示全链路时延瀑布图。</div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN: Full-Height Voice & LLM/VLM Dialogue -->
+    <section class="card right-col">
+      <div class="card-head">
+        <span>Multimodal Voice Assistant (Thor AI ↔ Mac Audio)</span>
+        <span id="ttsStatusPill" class="pill green">TTS: READY</span>
+      </div>
+
+      <!-- Direct Mac Mic & Mac Speaker Voice Controls -->
+      <div class="voice-bar">
+        <button id="btnMacMic" onclick="toggleMacMic()">🎙️ 开启电脑麦克风</button>
+        <button id="btnBrowserTts" class="active-green" onclick="toggleBrowserTts()">🔊 电脑播报: ON</button>
+        <select id="voiceSelect" onchange="switchVoice(this.value)" title="切换 Kokoro 中文音色">
+          <option value="47">音色: 晓晓(女)</option>
+          <option value="45">音色: 晓贝(女)</option>
+          <option value="48">音色: 晓伊(女)</option>
+          <option value="50">音色: 云希(男)</option>
+          <option value="52">音色: 云扬(男)</option>
+        </select>
+        <button onclick="stopAudioPlayback()" title="立即打断当前播报">⏹</button>
+        <div class="vu-wrap" title="麦克风输入音量"><div id="vuFill" class="vu-fill"></div></div>
+      </div>
+
+      <div class="asr-banner" id="asrBanner">
+        <span>💬 点击“开启电脑麦克风”即可直接对着电脑说话，或直接在下方输入</span>
+      </div>
+
+      <div class="chat-box" id="chatBox"></div>
+
+      <div class="chat-footer">
+        <div class="quick-prompts">
+          <button onclick="quickSend('追踪这个')">📌 追踪这个</button>
+          <button onclick="quickSend('记住桌面')">📸 记住桌面</button>
+          <button onclick="quickSend('桌面有什么变化？')">🔍 桌面变化</button>
+          <button onclick="quickSend('我正看着的是什么？')">👁️ 看的是什么(VLM)</button>
+          <button onclick="quickSend('桌面有几个物体？')">🔢 物体计数</button>
+          <button onclick="quickSend('停止追踪')">🛑 停止追踪</button>
+        </div>
+        <div class="query-bar">
+          <input id="queryInput" placeholder="输入消息或开启上方电脑麦克风直接语音对话…" onkeydown="if(event.key==='Enter') sendQuery()" />
+          <button class="primary" onclick="sendQuery()">发送</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      show_heatmap: true,
+      show_som: true,
+      box_mode: 'all',
+      enable_gaze: true,
+      enable_vision: true,
+      enable_voice: true,
+      fusion_mode: 'probabilistic',
+      recording: false,
+      mode: 'live',
+      browserTts: true,
+      macMicOn: false,
+    };
+
+    const CALIB_POINTS = [
+      [0.12, 0.14], [0.50, 0.14], [0.88, 0.14],
+      [0.12, 0.50], [0.50, 0.50], [0.88, 0.50],
+      [0.12, 0.86], [0.50, 0.86], [0.88, 0.86],
+    ];
+    let calibIdx = 0;
+
+    // ------------------------------------------------------------------
+    // 1. Browser Kokoro TTS Playback Queue (Thor synthesizes -> Mac plays)
+    // ------------------------------------------------------------------
+    const ttsQueue = [];
+    let currentAudio = null;
+    let isPlayingTts = false;
+
+    function toggleBrowserTts() {
+      state.browserTts = !state.browserTts;
+      const btn = document.getElementById('btnBrowserTts');
+      btn.textContent = state.browserTts ? '🔊 电脑播报: ON' : '🔇 电脑播报: OFF';
+      btn.className = state.browserTts ? 'active-green' : '';
+      if (!state.browserTts) stopAudioPlayback();
+    }
+
+    function stopAudioPlayback() {
+      ttsQueue.length = 0;
+      if (currentAudio) {
+        currentAudio.pause();
+        currentAudio.src = '';
+        currentAudio = null;
+      }
+      isPlayingTts = false;
+      const pill = document.getElementById('ttsStatusPill');
+      pill.textContent = 'TTS: READY';
+      pill.className = 'pill green';
+    }
+
+    function enqueueTtsWav(wavB64) {
+      if (!state.browserTts || !wavB64) return;
+      ttsQueue.push(wavB64);
+      if (!isPlayingTts) playNextTts();
+    }
+
+    function playNextTts() {
+      if (ttsQueue.length === 0) {
+        isPlayingTts = false;
+        const pill = document.getElementById('ttsStatusPill');
+        pill.textContent = 'TTS: READY';
+        pill.className = 'pill green';
+        return;
+      }
+      isPlayingTts = true;
+      const pill = document.getElementById('ttsStatusPill');
+      pill.textContent = 'TTS: SPEAKING';
+      pill.className = 'pill amber';
+      const b64 = ttsQueue.shift();
+      const audio = new Audio(`data:audio/wav;base64,${b64}`);
+      currentAudio = audio;
+      audio.onended = () => { currentAudio = null; playNextTts(); };
+      audio.onerror = () => { currentAudio = null; playNextTts(); };
+      audio.play().catch((err) => {
+        console.warn('Browser autoplay blocked until user interacts:', err);
+        currentAudio = null;
+        isPlayingTts = false;
+        pill.textContent = 'TTS: 点击页面解锁声音';
+        pill.className = 'pill red';
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // 2. Mac Browser Microphone -> 16kHz Int16 PCM -> Thor Zipformer ASR
+    // ------------------------------------------------------------------
+    let micStream = null;
+    let micCtx = null;
+    let micProc = null;
+    let pcmBuffer = [];
+    let pcmTimer = null;
+
+    function downsampleTo16k(float32Arr, inRate) {
+      const outRate = 16000;
+      if (inRate === outRate) {
+        const out = new Int16Array(float32Arr.length);
+        for (let i = 0; i < float32Arr.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32Arr[i]));
+          out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        return out;
+      }
+      const ratio = inRate / outRate;
+      const newLen = Math.round(float32Arr.length / ratio);
+      const out = new Int16Array(newLen);
+      let offsetResult = 0;
+      let offsetBuffer = 0;
+      while (offsetResult < newLen) {
+        const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+        let accum = 0, count = 0;
+        for (let i = offsetBuffer; i < nextOffsetBuffer && i < float32Arr.length; i++) {
+          accum += float32Arr[i];
+          count++;
+        }
+        const s = Math.max(-1, Math.min(1, count ? accum / count : 0));
+        out[offsetResult] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        offsetResult++;
+        offsetBuffer = nextOffsetBuffer;
+      }
+      return out;
+    }
+
+    async function toggleMacMic() {
+      const btn = document.getElementById('btnMacMic');
+      if (state.macMicOn) {
+        state.macMicOn = false;
+        if (pcmTimer) { clearInterval(pcmTimer); pcmTimer = null; }
+        if (micProc) { micProc.disconnect(); micProc = null; }
+        if (micCtx) { micCtx.close(); micCtx = null; }
+        if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+        document.getElementById('vuFill').style.width = '0%';
+        btn.textContent = '🎙️ 开启电脑麦克风';
+        btn.className = '';
+        await fetch('/api/audio/mic_mode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ browser_mic: false }) });
+        document.getElementById('asrBanner').textContent = '💬 电脑麦克风已关闭（已切回 Thor USB 麦克风 / 文本模式）';
+        return;
+      }
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert('浏览器仅允许在 http://localhost:8080 下开启电脑麦克风（当前为非 localhost HTTP 地址）。\n请用 ssh -N -L 8080:127.0.0.1:8080 thor 后打开 http://localhost:8080，或直接对 Thor USB 麦克风说话！');
+        return;
+      }
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        micCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = micCtx.createMediaStreamSource(micStream);
+        micProc = micCtx.createScriptProcessor(4096, 1, 1);
+        const zeroGain = micCtx.createGain();
+        zeroGain.gain.value = 0;
+        const inRate = micCtx.sampleRate;
+        pcmBuffer = [];
+
+        micProc.onaudioprocess = (ev) => {
+          const input = ev.inputBuffer.getChannelData(0);
+          let sum = 0;
+          for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+          const rms = Math.sqrt(sum / input.length);
+          document.getElementById('vuFill').style.width = `${Math.min(100, rms * 450)}%`;
+          pcmBuffer.push(downsampleTo16k(input, inRate));
+        };
+        source.connect(micProc);
+        micProc.connect(zeroGain);
+        zeroGain.connect(micCtx.destination);
+
+        await fetch('/api/audio/mic_mode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ browser_mic: true }) });
+        pcmTimer = setInterval(() => {
+          if (!pcmBuffer.length) return;
+          const totalLen = pcmBuffer.reduce((acc, a) => acc + a.length, 0);
+          const merged = new Int16Array(totalLen);
+          let off = 0;
+          for (const arr of pcmBuffer) { merged.set(arr, off); off += arr.length; }
+          pcmBuffer = [];
+          fetch('/api/audio/pcm?sr=16000', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: merged.buffer
+          }).catch(() => {});
+        }, 120);
+
+        state.macMicOn = true;
+        btn.textContent = '🎙️ 电脑对话中 (点击关闭)';
+        btn.className = 'active-green';
+        document.getElementById('asrBanner').textContent = '🎙️ 正在聆听电脑麦克风（Thor Zipformer 实时识别 + 电脑 Kokoro 语音回复）…';
+      } catch (err) {
+        alert('无法打开电脑麦克风，请在浏览器中允许 localhost 访问麦克风：' + err.message);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // 3. Controls, Query, Calibration & SSE Rendering
+    // ------------------------------------------------------------------
+    document.getElementById('videoWrap').addEventListener('click', (ev) => {
+      if (document.getElementById('calibOverlay').classList.contains('active')) return;
+      const rect = ev.currentTarget.getBoundingClientRect();
+      const x = Math.max(0.01, Math.min(0.99, (ev.clientX - rect.left) / rect.width));
+      const y = Math.max(0.01, Math.min(0.99, (ev.clientY - rect.top) / rect.height));
+      if (state.mode === 'demo') {
+        fetch('/api/demo/gaze', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ x, y }) });
+      } else {
+        fetch('/api/track/click', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ x, y }) });
+      }
+    });
+
+    async function sendQuery() {
+      const inp = document.getElementById('queryInput');
+      const text = inp.value.trim();
+      if (!text) return;
+      inp.value = '';
+      stopAudioPlayback();
+      await fetch('/api/query', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ text }) });
+    }
+    function quickSend(text) {
+      document.getElementById('queryInput').value = text;
+      sendQuery();
+    }
+
+    async function toggleModality(which) {
+      const body = {};
+      if (which === 'gaze') { state.enable_gaze = !state.enable_gaze; body.enable_gaze = state.enable_gaze; }
+      if (which === 'vision') { state.enable_vision = !state.enable_vision; body.enable_vision = state.enable_vision; }
+      if (which === 'voice') { state.enable_voice = !state.enable_voice; body.enable_voice = state.enable_voice; }
+      const r = await (await fetch('/api/controls', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
+      syncControlButtons(r);
+    }
+
+    async function switchBoxMode(val) {
+      state.box_mode = val;
+      await fetch('/api/controls', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ box_mode: val }) });
+    }
+
+    async function toggleOpt(which) {
+      const body = {};
+      if (which === 'heatmap') { state.show_heatmap = !state.show_heatmap; body.show_heatmap = state.show_heatmap; }
+      if (which === 'som') { state.show_som = !state.show_som; body.show_som = state.show_som; }
+      const r = await (await fetch('/api/controls', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })).json();
+      syncControlButtons(r);
+    }
+
+    async function switchFusionMode(val) {
+      state.fusion_mode = val;
+      await fetch('/api/controls', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ fusion_mode: val }) });
+    }
+
+    async function switchBackend(val) {
+      await fetch('/api/controls', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ llm_backend: val }) });
+    }
+
+    async function switchVoice(val) {
+      await fetch('/api/controls', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tts_sid: parseInt(val, 10) }) });
+    }
+
+    function syncControlButtons(s) {
+      if (s.enable_gaze !== undefined) state.enable_gaze = s.enable_gaze;
+      if (s.enable_vision !== undefined) state.enable_vision = s.enable_vision;
+      if (s.enable_voice !== undefined) state.enable_voice = s.enable_voice;
+      const bG = document.getElementById('btnModGaze');
+      const bV = document.getElementById('btnModVision');
+      const bA = document.getElementById('btnModVoice');
+      if (bG) { bG.textContent = `👁 眼动: ${state.enable_gaze ? 'ON' : 'OFF'}`; bG.className = state.enable_gaze ? 'active-green' : ''; }
+      if (bV) { bV.textContent = `📷 视觉: ${state.enable_vision ? 'ON' : 'OFF'}`; bV.className = state.enable_vision ? 'active-green' : ''; }
+      if (bA) { bA.textContent = `🎙 语音: ${state.enable_voice ? 'ON' : 'OFF'}`; bA.className = state.enable_voice ? 'active-green' : ''; }
+      if (s.box_mode) {
+        state.box_mode = s.box_mode;
+        const bm = document.getElementById('boxModeSelect');
+        if (bm) bm.value = s.box_mode;
+      }
+      state.show_heatmap = s.show_heatmap;
+      state.show_som = s.show_som;
+      document.getElementById('btnHeatmap').textContent = `热力图: ${s.show_heatmap ? 'ON' : 'OFF'}`;
+      document.getElementById('btnSom').textContent = `Set-of-Mark: ${s.show_som ? 'ON' : 'OFF'}`;
+      if (s.fusion_mode) {
+        state.fusion_mode = s.fusion_mode;
+        document.getElementById('fusionModeSelect').value = s.fusion_mode;
+      }
+      if (s.tts_sid !== undefined) {
+        const vs = document.getElementById('voiceSelect');
+        if (vs) vs.value = String(s.tts_sid);
+      }
+    }
+
+    async function reconnectCameras() {
+      await fetch('/api/cameras/reconnect', { method: 'POST' });
+    }
+
+    async function toggleRecord() {
+      const url = state.recording ? '/api/record/stop' : '/api/record/start';
+      const r = await (await fetch(url, { method: 'POST' })).json();
+      state.recording = r.recording;
+      const btn = document.getElementById('btnRecord');
+      btn.textContent = state.recording ? '■ 停止' : '● 录制';
+      btn.className = state.recording ? 'danger' : '';
+    }
+
+    async function startCalibration() {
+      await fetch('/api/calibration/clear', { method: 'POST' });
+      calibIdx = 0;
+      document.getElementById('calibOverlay').classList.add('active');
+      updateCalibDot();
+    }
+    function updateCalibDot() {
+      const [tx, ty] = CALIB_POINTS[calibIdx];
+      const dot = document.getElementById('calibDot');
+      dot.style.left = `${tx * 100}%`;
+      dot.style.top = `${ty * 100}%`;
+      document.getElementById('calibMsg').textContent = `点 ${calibIdx + 1} / ${CALIB_POINTS.length}：请稳定注视红点并点击采集`;
+    }
+    async function captureCalibSample() {
+      const [tx, ty] = CALIB_POINTS[calibIdx];
+      await fetch('/api/calibration/sample', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ target_x: tx, target_y: ty }) });
+      calibIdx++;
+      if (calibIdx >= CALIB_POINTS.length) {
+        const res = await (await fetch('/api/calibration/fit', { method: 'POST' })).json();
+        document.getElementById('calibOverlay').classList.remove('active');
+        alert(`9点多项式标定完成！拟合 RMSE = ${res.rmse}`);
+      } else {
+        updateCalibDot();
+      }
+    }
+    function cancelCalibration() { document.getElementById('calibOverlay').classList.remove('active'); }
+
+    function renderGrounding(g) {
+      if (!g) return;
+      document.getElementById('gazeRelPill').textContent = `w_g = ${g.gaze_reliability.toFixed(2)} | fix=${g.fixation_count}`;
+      document.getElementById('groundingMeta').innerHTML =
+        `指令: <b style="color:var(--text)">${g.utterance_text}</b> · ${g.fusion_ms} ms · σ=${g.gaze_dispersion}`;
+      const list = document.getElementById('candList');
+      list.innerHTML = '';
+      (g.candidates || []).slice(0, 3).forEach((c) => {
+        const isSel = c.track_id === g.selected_track_id;
+        const div = document.createElement('div');
+        div.className = 'cand-row' + (isSel ? ' selected' : '');
+        div.innerHTML = `
+          <div class="cand-top">
+            <span>[${c.som_id}] ${c.class_name} (${c.color}) ${isSel ? '★' : ''}</span>
+            <span style="color:${isSel ? 'var(--amber)' : 'var(--accent)'}">P = ${(c.posterior_prob * 100).toFixed(1)}%</span>
+          </div>
+          <div class="bars">
+            <span>Gaze</span><div class="bar-bg"><div class="bar-fill" style="width:${c.score_gaze*100}%; background:#f87171;"></div></div><span>${c.score_gaze.toFixed(2)}</span>
+            <span>Spatial</span><div class="bar-bg"><div class="bar-fill" style="width:${c.score_spatial*100}%; background:#38bdf8;"></div></div><span>${c.score_spatial.toFixed(2)}</span>
+            <span>Semantic</span><div class="bar-bg"><div class="bar-fill" style="width:${c.score_semantic*100}%; background:#34d399;"></div></div><span>${c.score_semantic.toFixed(2)}</span>
+            <span>Temporal</span><div class="bar-bg"><div class="bar-fill" style="width:${c.score_temporal*100}%; background:#a78bfa;"></div></div><span>${c.score_temporal.toFixed(2)}</span>
+          </div>`;
+        list.appendChild(div);
+      });
+    }
+
+    const msgNodes = new Map();
+    const fsomCache = new Map();
+
+    function upsertDialogue(d) {
+      const box = document.getElementById('chatBox');
+      const key = `${d.utterance_id}_${d.role}`;
+      let node = msgNodes.get(key);
+      if (!node) {
+        node = document.createElement('div');
+        node.className = `msg ${d.role}`;
+        box.appendChild(node);
+        msgNodes.set(key, node);
+      }
+      const badge = d.route ? `<span class="pill ${d.route==='SYSTEM2_VLM_FSOM'?'amber':'green'}">${d.route}</span>` : '';
+      const bk = d.backend ? `<span>${d.backend}</span>` : '';
+      let fsomHtml = '';
+      const fpack = d.fsom_image_b64 ? { fsom_b64: d.fsom_image_b64, roi_b64: d.roi_image_b64 } : fsomCache.get(d.utterance_id);
+      if (d.role === 'assistant' && fpack && fpack.fsom_b64) {
+        fsomHtml = `<div class="fsom-inline">
+          <img src="data:image/jpeg;base64,${fpack.fsom_b64}" alt="F-SoM" />
+          ${fpack.roi_b64 ? `<img src="data:image/jpeg;base64,${fpack.roi_b64}" alt="ROI" />` : ''}
+        </div>`;
+      }
+      node.innerHTML = `<div class="msg-meta">${d.role === 'user' ? 'YOU' : 'EGOGAZE'} ${badge} ${bk}</div><div>${d.text}</div>${fsomHtml}`;
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function addLatencyTrace(t) {
+      const list = document.getElementById('traceList');
+      if (list.children.length === 1 && !list.children[0].classList.contains('trace-item')) list.innerHTML = '';
+      const total = Math.max(t.total_ms, 1);
+      const pFus = Math.min(100, (t.fusion_ms / total) * 100);
+      const pTtft = Math.min(100 - pFus, (t.ttft_ms / total) * 100);
+      const pRest = Math.max(0, 100 - pFus - pTtft);
+      const item = document.createElement('div');
+      item.className = 'trace-item';
+      item.innerHTML = `
+        <div style="display:flex; justify-content:space-between; gap:6px;">
+          <b style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${t.utterance_text}</b>
+          <span style="color:var(--accent); white-space:nowrap;">${t.total_ms} ms</span>
+        </div>
+        <div style="font-size:10px; color:var(--muted); margin-top:2px;">
+          ${t.route} · ${t.backend} · Fusion ${t.fusion_ms}ms · TTFT ${t.ttft_ms}ms
+        </div>
+        <div class="waterfall">
+          <div style="width:${pFus}%; background:#38bdf8;"></div>
+          <div style="width:${pTtft}%; background:#a78bfa;"></div>
+          <div style="width:${pRest}%; background:#34d399;"></div>
+        </div>`;
+      list.prepend(item);
+      while (list.children.length > 8) list.removeChild(list.lastChild);
+    }
+
+    function updateGazeTelemetry(g, tel, objCount) {
+      if (tel) {
+        document.getElementById('mGazeHz').textContent = `${tel.gaze_hz} Hz`;
+        document.getElementById('mVisFps').textContent = `${tel.vision_fps} FPS`;
+      }
+      if (objCount !== undefined) document.getElementById('mObjCount').textContent = objCount;
+      if (g) {
+        document.getElementById('mDwell').textContent = state.enable_gaze ? `${Math.round(g.dwell_ms)} ms` : 'OFF';
+        const pill = document.getElementById('gazeStatePill');
+        if (!state.enable_gaze) {
+          pill.textContent = 'GAZE: OFF';
+          pill.className = 'pill';
+        } else {
+          pill.textContent = `GAZE: ${g.state} (${g.filtered_xy[0].toFixed(2)}, ${g.filtered_xy[1].toFixed(2)})`;
+          pill.className = 'pill ' + (g.state === 'FIXATION' ? 'green' : g.state === 'SACCADE' ? 'amber' : 'red');
+        }
+      }
+    }
+
+    const es = new EventSource('/events');
+    es.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'snapshot') {
+        const s = msg.data;
+        state.mode = s.mode;
+        document.getElementById('modePill').textContent = `${s.mode.toUpperCase()} · ${s.vision_backend}`;
+        document.getElementById('vlmBackendTag').textContent = `VLM: ${s.vlm_backend}`;
+        syncControlButtons(s);
+        const sel = document.getElementById('backendSelect');
+        sel.innerHTML = '';
+        (s.llm_backends || []).forEach((b) => {
+          const opt = document.createElement('option');
+          opt.value = b; opt.textContent = `LLM: ${b}`;
+          if (b === s.llm_backend) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        updateGazeTelemetry(s.gaze, s.telemetry, s.scene ? s.scene.objects.length : 0);
+        if (s.grounding) renderGrounding(s.grounding);
+        (s.dialogue || []).forEach(upsertDialogue);
+        (s.latency_traces || []).forEach(addLatencyTrace);
+      } else if (msg.type === 'tick') {
+        updateGazeTelemetry(msg.data.gaze, msg.data.telemetry, msg.data.object_count);
+        if (!state.macMicOn && msg.data.mic_rms !== undefined) {
+          document.getElementById('vuFill').style.width = `${Math.min(100, msg.data.mic_rms * 700)}%`;
+        }
+      } else if (msg.type === 'grounding') {
+        renderGrounding(msg.data);
+      } else if (msg.type === 'dialogue') {
+        upsertDialogue(msg.data);
+      } else if (msg.type === 'fsom_prompt') {
+        fsomCache.set(msg.data.utterance_id, msg.data);
+      } else if (msg.type === 'latency') {
+        addLatencyTrace(msg.data);
+      } else if (msg.type === 'asr_partial') {
+        const txt = msg.data.text;
+        document.getElementById('asrBanner').textContent = txt
+          ? `🎙️ 正在识别: ${txt}`
+          : (state.macMicOn ? '🎙️ 正在聆听电脑麦克风…' : '💬 点击“开启电脑麦克风”即可直接对着电脑说话，或直接在下方输入');
+      } else if (msg.type === 'tts_audio') {
+        enqueueTtsWav(msg.data.wav_b64);
+      } else if (msg.type === 'barge_in') {
+        stopAudioPlayback();
+      }
+    };
+  </script>
+</body>
+</html>

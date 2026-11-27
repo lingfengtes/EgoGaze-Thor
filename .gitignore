@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime data, weights & recordings
+data/models/
+data/cache/
+data/recordings/
+configs/calibration.json
+configs/local.yaml
+*.pt
+*.onnx
+*.engine
+*.mp4
+*.wav
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.log

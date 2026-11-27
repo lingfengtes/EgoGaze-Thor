@@ -1,0 +1,147 @@
+# EgoGaze-Thor Default Configuration (Portable Open-Source Defaults)
+# For machine-specific paths, copy configs/example.yaml to configs/local.yaml (gitignored).
+
+system:
+  name: "EgoGaze-Thor"
+  mode: "live"            # live | demo | replay
+  log_level: "INFO"
+  data_dir: "data"
+  recordings_dir: "data/recordings"
+
+web:
+  host: "0.0.0.0"
+  port: 8080
+  jpeg_quality: 72
+  stream_max_width: 960
+  stream_fps: 25
+
+sensors:
+  camera_left_name: "Camera_L"
+  camera_right_name: "Camera_R"
+  camera_scene_name: "USB2.0 camera"
+  fallback_left: "/dev/video4"
+  fallback_right: "/dev/video0"
+  fallback_scene: "/dev/video2"
+  eye_width: 320
+  eye_height: 240
+  eye_fps: 30
+  scene_width: 1280
+  scene_height: 720
+  scene_fps: 30
+  mic_name: "UGREEN"
+  mic_samplerate: 44100
+  target_samplerate: 16000
+  audio_chunk_frames: 1024
+
+gaze:
+  model_path: "data/models/gazenet/Iter_10_GazeNet.pt"
+  trt_engine_path: "data/cache/gazenet_fp16.engine"
+  use_tensorrt: true
+  target_hz: 25.0
+  calibration_path: "configs/calibration.json"
+  one_euro_min_cutoff: 1.2
+  one_euro_beta: 0.45
+  one_euro_d_cutoff: 1.0
+  saccade_velocity_thresh: 1.35
+  min_fixation_ms: 120.0
+  edge_margin: 0.02
+
+vision:
+  model: "data/models/yolo11s.pt"
+  fallback_model: "data/models/yolo11n.pt"
+  device: "0"
+  imgsz: 640
+  conf: 0.25
+  iou: 0.45
+  target_fps: 20.0
+  tracker: "bytetrack.yaml"
+  vocab:
+    - "cup"
+    - "bottle"
+    - "mug"
+    - "laptop"
+    - "keyboard"
+    - "mouse"
+    - "cell phone"
+    - "book"
+    - "notebook"
+    - "pen"
+    - "glasses"
+    - "headphones"
+    - "backpack"
+    - "monitor"
+    - "chair"
+    - "bowl"
+    - "remote"
+    - "box"
+    - "person"
+    - "hand"
+
+fusion:
+  pre_window_ms: 350.0
+  post_window_ms: 200.0
+  gaze_sigma: 0.14
+  time_decay_tau_ms: 450.0
+  base_weights:
+    gaze: 2.2
+    spatial: 1.8
+    semantic: 2.4
+    temporal: 0.8
+  deictic_gaze_boost: 1.45
+  max_dispersion_for_full_trust: 0.08
+  dispersion_cutoff: 0.24
+  min_posterior_lock: 0.35
+
+speech:
+  enabled: true
+  asr_engine: "zipformer_onnx"
+  zipformer_model_dir: "data/models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
+  asr_model_dir: "data/models/sherpa-ncnn-conv-emformer-transducer-2022-12-06"
+  vad_model_path: "data/models/silero_vad.onnx"
+  vad_threshold: 0.25
+  agc_target_rms: 0.10
+  agc_max_gain: 12.0
+  hotwords_file: ""
+  asr_threads: 4
+  silence_chunks_end: 10
+  enable_thor_mic: true
+  tts_enabled: true
+  tts_play_local: false
+  tts_model_dir: "data/models/kokoro-multi-lang-v1_0"
+  tts_threads: 4
+  tts_sid: 47               # 45-52: Mandarin Chinese voices (47=zf_xiaoxiao, 50=zm_yunxi)
+  tts_speed: 1.0
+  tts_provider: "cpu"
+  tts_target_samplerate: 24000
+  tts_output_device: null
+  barge_in_enabled: true
+
+reasoning:
+  active_llm_backend: "ollama_qwen3_vl_8b"
+  llm_backends:
+    ollama_qwen3_vl_8b:
+      type: "ollama"
+      base_url: "http://127.0.0.1:11434"
+      model: "qwen3-vl:8b"
+      timeout_s: 30.0
+    edgellm_nvfp4:
+      type: "edgellm_daemon"
+      base_url: "http://127.0.0.1:8000"
+      model: "Qwen3-8B-NVFP4"
+      timeout_s: 15.0
+    openai_fp8:
+      type: "openai"
+      base_url: "http://127.0.0.1:8001"
+      model: "Qwen3-4B-fp8"
+      timeout_s: 15.0
+  vlm:
+    enabled: true
+    mode: "auto"            # ollama | http | local_hf | auto
+    ollama_url: "http://127.0.0.1:11434"
+    ollama_model: "qwen3-vl:8b"
+    base_url: "http://127.0.0.1:8002"
+    model_id: "data/models/Qwen3-VL-4B-Instruct"
+    hf_model_name: "Qwen/Qwen3-VL-4B-Instruct"
+    max_new_tokens: 160
+    foveated_roi_size: 336
+    full_frame_max_width: 512
