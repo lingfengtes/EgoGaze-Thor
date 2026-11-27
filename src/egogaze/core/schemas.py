@@ -72,6 +72,7 @@ class ParsedLexicalCues(BaseModel):
     raw_text: str
     intent_hint: str = "query"  # track | stop_track | describe_vlm | count | chat
     target_classes: List[str] = Field(default_factory=list)
+    requested_target: Optional[str] = None  # Free-text noun phrase (e.g. "苹果", "魔方") for open-world/VLM verification
     spatial_cue: Optional[str] = None  # left | right | center | top | bottom | closest | largest
     color_cue: Optional[str] = None
     is_deictic: bool = False

@@ -18,6 +18,7 @@ directly for reproducible ablation benchmarks.
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,31 +34,81 @@ from egogaze.core.schemas import (
 )
 
 
-# Bilingual desktop/indoor lexical mappings
+# Bilingual desktop/indoor + COCO-80 lexical mappings
 CLASS_SYNONYMS: Dict[str, List[str]] = {
-    "cup": ["杯子", "水杯", "茶杯", "咖啡杯", "马克杯", "cup", "mug"],
-    "bottle": ["瓶子", "水瓶", "饮料瓶", "矿泉水", "bottle"],
+    "cup": ["杯子", "水杯", "茶杯", "咖啡杯", "马克杯", "保温杯", "cup", "mug"],
+    "bottle": ["瓶子", "水瓶", "饮料瓶", "矿泉水", "可乐瓶", "bottle"],
+    "wine glass": ["酒杯", "高脚杯", "红酒杯", "wine glass"],
     "laptop": ["电脑", "笔记本", "笔记本电脑", "laptop", "macbook"],
     "keyboard": ["键盘", "keyboard"],
     "mouse": ["鼠标", "mouse"],
     "cell phone": ["手机", "电话", "phone", "cell phone", "smartphone"],
     "book": ["书", "书本", "课本", "本子", "笔记本子", "book", "notebook"],
-    "pen": ["笔", "钢笔", "圆珠笔", "中性笔", "pen", "pencil"],
+    "pen": ["笔", "钢笔", "圆珠笔", "中性笔", "铅笔", "pen", "pencil"],
     "glasses": ["眼镜", "墨镜", "glasses"],
     "headphones": ["耳机", "头戴式耳机", "headphones", "earphones"],
-    "backpack": ["书包", "背包", "包", "backpack", "bag"],
+    "backpack": ["书包", "背包", "双肩包", "backpack"],
+    "handbag": ["手提包", "挎包", "女包", "包", "handbag", "bag"],
+    "suitcase": ["行李箱", "拉杆箱", "箱子", "suitcase"],
+    "tv": ["电视", "显示器", "屏幕", "tv", "monitor", "screen"],
     "monitor": ["显示器", "屏幕", "monitor", "screen"],
-    "chair": ["椅子", "凳子", "chair"],
-    "bowl": ["碗", "bowl"],
-    "remote": ["遥控器", "remote"],
-    "box": ["盒子", "箱子", "纸盒", "box"],
+    "chair": ["椅子", "凳子", "座椅", "chair"],
+    "couch": ["沙发", "couch", "sofa"],
+    "bowl": ["碗", "饭碗", "盘子", "bowl"],
+    "remote": ["遥控器", "遥控", "remote"],
+    "box": ["盒子", "纸盒", "纸箱", "box"],
     "person": ["人", "人物", "person"],
     "hand": ["手", "hand"],
+    # Fruits / round objects / daily items (frequently confused by COCO detectors)
+    "apple": ["苹果", "红苹果", "青苹果", "apple"],
+    "orange": ["橘子", "橙子", "桔子", "柑橘", "沃柑", "orange", "tangerine", "citrus"],
+    "banana": ["香蕉", "banana"],
+    "sports ball": ["球", "小球", "篮球", "足球", "网球", "乒乓球", "羽毛球", "ball", "sports ball"],
+    "donut": ["甜甜圈", "面包圈", "donut", "doughnut"],
+    "cake": ["蛋糕", "点心", "cake"],
+    "carrot": ["胡萝卜", "萝卜", "carrot"],
+    "broccoli": ["西兰花", "花菜", "broccoli"],
+    "sandwich": ["三明治", "汉堡", "面包", "sandwich"],
+    "vase": ["花瓶", "瓶", "vase"],
+    "potted plant": ["盆栽", "绿植", "植物", "花盆", "plant", "potted plant"],
+    "scissors": ["剪刀", "scissors"],
+    "clock": ["时钟", "闹钟", "表", "手表", "clock", "watch"],
+    "teddy bear": ["玩偶", "公仔", "毛绒玩具", "泰迪熊", "小熊", "teddy bear", "plush"],
+    "fork": ["叉子", "餐叉", "fork"],
+    "knife": ["刀", "小刀", "水果刀", "美工刀", "knife"],
+    "spoon": ["勺子", "汤匙", "调羹", "spoon"],
+    "umbrella": ["雨伞", "伞", "umbrella"],
+    "toothbrush": ["牙刷", "toothbrush"],
+    "dining table": ["桌子", "餐桌", "书桌", "table", "desk"],
 }
+
+# Known visual-confusion neighborhoods where COCO detectors frequently misclassify an object
+# (e.g. an apple detected as an orange or sports ball). Used for soft semantic fallback (0.62 vs 0.05)
+# AND to guide VLM verification when no exact class match exists.
+SEMANTIC_CONFUSION_GROUPS: List[set[str]] = [
+    {"apple", "orange", "sports ball", "donut", "cake", "bowl"},
+    {"cup", "bottle", "wine glass", "vase", "bowl"},
+    {"laptop", "tv", "monitor"},
+    {"cell phone", "remote"},
+    {"book", "notebook", "cell phone", "keyboard", "box"},
+    {"backpack", "handbag", "suitcase"},
+    {"chair", "couch"},
+    {"fork", "knife", "spoon", "toothbrush", "pen"},
+    {"banana", "carrot"},
+]
+
+
+def classes_semantically_confusable(c1: str, c2: str) -> bool:
+    a, b = c1.lower().strip(), c2.lower().strip()
+    if not a or not b:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    return any(a in grp and b in grp for grp in SEMANTIC_CONFUSION_GROUPS)
 
 COLOR_SYNONYMS: Dict[str, List[str]] = {
     "red": ["红色", "红的", "红", "red"],
-    "orange": ["橙色", "橘色", "橙", "orange"],
+    "orange": ["橙色", "橘色", "橙色的", "橘色的", "orange"],
     "yellow": ["黄色", "黄的", "黄", "yellow"],
     "green": ["绿色", "绿的", "绿", "green"],
     "blue": ["蓝色", "蓝的", "蓝", "blue"],
@@ -90,6 +141,41 @@ VLM_TRIGGER_WORDS = [
     "what is", "describe", "read", "explain", "tell me about", "summarize",
     "what am i looking", "finger", "hand", "gesture", "holding", "see", "in front",
 ]
+
+
+_TRACK_STRIP_TOKENS = sorted(
+    set(
+        TRACK_WORDS
+        + DEICTIC_WORDS
+        + [w for _, kws in SPATIAL_SYNONYMS for w in kws]
+        + [
+            "请帮我", "帮我", "帮忙", "给我", "我要", "我想", "请", "一下", "一个", "一下那个",
+            "这一个", "那一个", "这个", "那个", "前面", "桌面", "桌上", "画面里", "视野里",
+            "里面", "物体", "东西", "目标", "的", "了", "吧", "呢", "啊", "呀", "吗",
+            "please", "help me", "can you", "the", "a", "an", "object", "target", "item",
+        ]
+    ),
+    key=len,
+    reverse=True,
+)
+
+
+def _extract_requested_target(raw_text: str) -> Optional[str]:
+    """Extract the free-text target noun from a tracking command (e.g. '追踪苹果' -> '苹果', '追踪这个' -> None)."""
+    s = raw_text.strip()
+    if not s:
+        return None
+    s = re.sub(r"[，。！？、,.!?;:：\"'“”‘’()（）\[\]]+", " ", s)
+    for tok in _TRACK_STRIP_TOKENS:
+        if tok.isascii():
+            s = re.sub(rf"\b{re.escape(tok)}\b", " ", s, flags=re.IGNORECASE)
+        else:
+            s = s.replace(tok, " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    # Ignore trivial 1-char leftover particles
+    if not s or s in ("这", "那", "它", "我", "你", "他", "她", "个", "把"):
+        return None
+    return s
 
 
 def parse_lexical_cues(text: str) -> ParsedLexicalCues:
@@ -141,10 +227,13 @@ def parse_lexical_cues(text: str) -> ParsedLexicalCues:
     else:
         intent_hint = "chat"
 
+    requested_target = _extract_requested_target(raw) if intent_hint == "track" else None
+
     return ParsedLexicalCues(
         raw_text=raw,
         intent_hint=intent_hint,
         target_classes=target_classes,
+        requested_target=requested_target,
         spatial_cue=spatial_cue,
         color_cue=color_cue,
         is_deictic=is_deictic,
@@ -209,12 +298,19 @@ def compute_spatial_score(obj: DetectedObject, spatial_cue: Optional[str], all_o
 
 
 def compute_semantic_score(obj: DetectedObject, cues: ParsedLexicalCues) -> float:
-    """Semantic similarity score combining class match and color attribute match."""
+    """Semantic similarity score combining exact class match, confusion-neighbor soft match, and color match."""
     cls_score = 0.5
     if cues.target_classes:
         obj_cls = obj.class_name.lower()
         exact = any(tc == obj_cls or tc in obj_cls or obj_cls in tc for tc in cues.target_classes)
-        cls_score = 1.0 if exact else 0.05
+        if exact:
+            cls_score = 1.0
+        elif any(classes_semantically_confusable(tc, obj_cls) for tc in cues.target_classes):
+            # Soft visual-confusion credit (e.g. apple misdetected as orange / sports ball):
+            # strictly below exact match (1.0), yet decisively above unrelated classes (0.05).
+            cls_score = 0.62
+        else:
+            cls_score = 0.05
 
     color_score = 0.5
     if cues.color_cue:

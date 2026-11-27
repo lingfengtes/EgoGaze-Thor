@@ -109,3 +109,73 @@ def test_lexical_parser_and_tts_chunker():
         out.append(tail)
     assert len(out) >= 2
     assert "马克杯。" in "".join(out)
+
+
+def test_misclassification_resilient_tracking_and_patch_tracker() -> None:
+    import cv2
+    from egogaze.perception.vision_fast import (
+        FastVisionEngine,
+        _EgocentricTracker,
+        compute_hsv_histogram,
+    )
+
+    # 1. Lexical parser extracts requested_target for both COCO & open-world nouns
+    c_apple = parse_lexical_cues("帮我追踪那个苹果")
+    assert c_apple.intent_hint == "track"
+    assert "apple" in c_apple.target_classes
+    assert c_apple.requested_target == "苹果"
+
+    c_cube = parse_lexical_cues("追踪魔方")
+    assert c_cube.intent_hint == "track"
+    assert c_cube.target_classes == []
+    assert c_cube.requested_target == "魔方"
+
+    c_deictic = parse_lexical_cues("追踪这个")
+    assert c_deictic.requested_target is None
+
+    # 2. Grounding confusion-group soft fallback: "追踪苹果" matches misclassified "orange" over laptop/cup
+    scene = SceneSnapshot(
+        frame_id=10,
+        capture_mono_ns=1_000_000_000,
+        timestamp=1.0,
+        width=1000,
+        height=1000,
+        objects=[
+            DetectedObject(track_id=1, som_id=1, class_name="laptop", confidence=0.95, bbox_xyxy=(50, 200, 450, 700), center_norm=(0.25, 0.45), area_norm=0.20, color="Black"),
+            DetectedObject(track_id=2, som_id=2, class_name="orange", confidence=0.78, bbox_xyxy=(600, 400, 720, 520), center_norm=(0.66, 0.46), area_norm=0.014, color="Red"),
+            DetectedObject(track_id=3, som_id=3, class_name="cup", confidence=0.90, bbox_xyxy=(800, 350, 920, 550), center_norm=(0.86, 0.45), area_norm=0.024, color="Blue"),
+        ],
+    )
+    utt = SpeechUtterance(utterance_id="u_apple", text="追踪苹果", speech_start_mono_ns=900_000_000, speech_end_mono_ns=1_000_000_000, final_mono_ns=1_000_000_000)
+    engine = ProbabilisticGroundingEngine()
+    res = engine.ground(utt, scene, [], mode="probabilistic")
+    assert res.selected_track_id == 2
+    assert res.candidates[0].score_semantic >= 0.60
+
+    # 3. Tracker survives YOLO class flicker apple -> orange -> sports ball -> mouse on same visual target
+    red_patch = np.full((60, 60, 3), (30, 35, 220), dtype=np.uint8)
+    red_hist = compute_hsv_histogram(red_patch)
+    tracker = _EgocentricTracker()
+    id0 = tracker.update([((400, 300, 480, 380), "apple", red_hist)], 1280, 720)[0]
+    id1 = tracker.update([((406, 302, 486, 382), "orange", red_hist)], 1280, 720)[0]
+    id2 = tracker.update([((412, 305, 492, 385), "sports ball", red_hist)], 1280, 720)[0]
+    id3 = tracker.update([((416, 306, 496, 386), "mouse", red_hist)], 1280, 720)[0]
+    assert id0 == id1 == id2 == id3
+
+    # 4. OpenWorldPatchTracker tracks a moving red apple when YOLO detects nothing
+    f1 = np.full((360, 640, 3), (40, 45, 50), dtype=np.uint8)
+    cv2.circle(f1, (220, 180), 32, (25, 30, 215), -1)
+    cv2.circle(f1, (210, 168), 8, (180, 190, 255), -1)
+    vis = FastVisionEngine({}, demo_mode=True)
+    tid, snapped = vis.set_locked_bbox(f1, (184, 144, 256, 216), alias_label="苹果", hud_alias="apple")
+    assert snapped is None
+    assert tid == 90001
+
+    f2 = np.full((360, 640, 3), (40, 45, 50), dtype=np.uint8)
+    cv2.circle(f2, (255, 192), 32, (25, 30, 215), -1)
+    cv2.circle(f2, (245, 180), 8, (180, 190, 255), -1)
+    res_pt = vis._patch_tracker.update(f2)
+    assert res_pt is not None
+    bx1, by1, bx2, by2 = res_pt[0]
+    cx, cy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
+    assert abs(cx - 255) < 12 and abs(cy - 192) < 12

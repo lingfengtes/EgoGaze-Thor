@@ -345,6 +345,11 @@ class EgoGazePipeline:
     ) -> None:
         t0 = time.perf_counter_ns()
         hint = grounding.cues.intent_hint
+        route_used = RouteType.SYSTEM1_FAST
+        backend_used = "probabilistic_grounding"
+        fsom_b64_out: Optional[str] = None
+        vlm_ms = 0.0
+
         if hint == "memorize_scene":
             reply = self.memorize_current_scene()
         elif hint == "diff_scene":
@@ -362,7 +367,19 @@ class EgoGazePipeline:
             else:
                 reply = f"当前主视角共检测到 {n} 个桌面物体。"
         else:
-            if grounding.selected_track_id is not None:
+            cues = grounding.cues
+            has_named_target = bool(cues.target_classes or cues.requested_target)
+            target_hint = cues.requested_target or (cues.target_classes[0] if cues.target_classes else "")
+            sel_cls = (grounding.selected_class or "").lower()
+            exact_class_hit = bool(
+                grounding.selected_track_id is not None
+                and cues.target_classes
+                and any(tc == sel_cls or tc in sel_cls or sel_cls in tc for tc in cues.target_classes)
+            )
+            top_sem_score = grounding.candidates[0].score_semantic if grounding.candidates else 0.0
+
+            # Fast path (<2ms): pure deictic/spatial track ("追踪这个") OR exact YOLO class match ("追踪杯子" -> cup)
+            if (not has_named_target and grounding.selected_track_id is not None) or exact_class_hit:
                 self.vision_engine.set_locked_track(grounding.selected_track_id)
                 self._track_trail.clear()
                 self._locked_miss_frames = 0
@@ -370,6 +387,85 @@ class EgoGazePipeline:
                     f"已锁定目标 [{grounding.selected_som_id}] {grounding.selected_class}"
                     f"（融合置信度 {grounding.selected_prob * 100:.0f}%，眼动权重 {grounding.gaze_reliability:.2f}）。"
                 )
+            elif has_named_target:
+                # Escalate to System 2 VLM Visual Verification when YOLO misclassified (e.g. apple -> orange)
+                # or missed an open-world target completely!
+                with self._render_lock:
+                    raw_frame = self._latest_raw_scene.copy() if self._latest_raw_scene is not None else None
+
+                vlm_res: Optional[Dict[str, Any]] = None
+                if raw_frame is not None and self.vlm_client.enabled:
+                    self._emit_event(
+                        "dialogue",
+                        DialogueEvent(
+                            utterance_id=utt.utterance_id,
+                            role="assistant",
+                            text=f"检测器未精确匹配「{target_hint}」，正在用端侧视觉模型复核画面定位…",
+                            route=RouteType.SYSTEM2_VLM_FSOM,
+                            backend=self.vlm_client.backend_name,
+                            is_partial=True,
+                            timestamp=time.time(),
+                        ).model_dump(),
+                    )
+                    vlm_res = self.vlm_client.locate_track_target(
+                        utt.text, target_hint, raw_frame, scene, grounding
+                    )
+
+                if vlm_res and vlm_res.get("status") == "ok":
+                    route_used = RouteType.SYSTEM2_VLM_FSOM
+                    backend_used = str(vlm_res.get("backend", "vlm_track_verify"))
+                    vlm_ms = float(vlm_res.get("latency_ms", 0.0))
+                    fsom_b64_out = vlm_res.get("fsom_b64") or None
+                    disp_label = vlm_res.get("label") or target_hint
+                    hud_alias = vlm_res.get("label_en") or (cues.target_classes[0] if cues.target_classes else "target")
+
+                    if vlm_res.get("found") and vlm_res.get("som_id") is not None and scene:
+                        matched_obj = next((o for o in scene.objects if o.som_id == vlm_res["som_id"]), None)
+                        if matched_obj is not None:
+                            self.vision_engine.set_locked_track(
+                                matched_obj.track_id, alias_label=disp_label, hud_alias=hud_alias
+                            )
+                            self._track_trail.clear()
+                            self._locked_miss_frames = 0
+                            if matched_obj.class_name.lower() != hud_alias.lower():
+                                reply = (
+                                    f"视觉模型确认 [{matched_obj.som_id}] 即为「{disp_label}」"
+                                    f"（检测器原误标为 {matched_obj.class_name}），已开启抗误识追踪锁定。"
+                                )
+                            else:
+                                reply = f"视觉模型已确认并锁定目标 [{matched_obj.som_id}] 「{disp_label}」。"
+                        else:
+                            reply = f"视觉模型定位到了「{disp_label}」，但目标已离开当前帧，请重试。"
+                    elif vlm_res.get("found") and vlm_res.get("bbox_xyxy") is not None and raw_frame is not None:
+                        bbox = vlm_res["bbox_xyxy"]
+                        tid, snapped = self.vision_engine.set_locked_bbox(
+                            raw_frame, bbox, alias_label=disp_label, hud_alias=hud_alias
+                        )
+                        self._track_trail.clear()
+                        self._locked_miss_frames = 0
+                        if snapped is not None:
+                            reply = (
+                                f"视觉模型定位「{disp_label}」并关联到检测框 [{snapped.som_id}]"
+                                f"（原标 {snapped.class_name}），已开启抗误识追踪锁定。"
+                            )
+                        else:
+                            reply = f"检测器未框出「{disp_label}」，视觉模型已定位该目标并启动开放世界视觉追踪。"
+                    else:
+                        reply = f"视觉模型检查了当前画面，未发现「{target_hint}」，请将它移入镜头后再试。"
+                elif grounding.selected_track_id is not None and top_sem_score >= 0.55:
+                    # Graceful offline fallback: confusion-group soft match (e.g. apple -> orange score=0.62)
+                    hud_alias = cues.target_classes[0] if cues.target_classes else "target"
+                    self.vision_engine.set_locked_track(
+                        grounding.selected_track_id, alias_label=target_hint, hud_alias=hud_alias
+                    )
+                    self._track_trail.clear()
+                    self._locked_miss_frames = 0
+                    reply = (
+                        f"已按近似视觉类别锁定 [{grounding.selected_som_id}] {grounding.selected_class}"
+                        f"（对应「{target_hint}」，融合置信度 {grounding.selected_prob * 100:.0f}%）。"
+                    )
+                else:
+                    reply = f"当前视野中未找到「{target_hint}」，请注视目标或将其移入画面中心。"
             else:
                 reply = "当前视野中未找到匹配的目标物体，请注视目标或提供更明确的特征。"
 
@@ -380,8 +476,9 @@ class EgoGazePipeline:
             utterance_id=utt.utterance_id,
             role="assistant",
             text=reply,
-            route=RouteType.SYSTEM1_FAST,
-            backend="probabilistic_grounding",
+            route=route_used,
+            backend=backend_used,
+            fsom_image_b64=fsom_b64_out,
             timestamp=time.time(),
         )
         self._dialogue_history.append(ev)
@@ -390,12 +487,12 @@ class EgoGazePipeline:
         trace = PipelineLatencyTrace(
             utterance_id=utt.utterance_id,
             utterance_text=utt.text,
-            route=RouteType.SYSTEM1_FAST,
-            backend="probabilistic_grounding",
+            route=route_used,
+            backend=backend_used,
             vad_ms=utt.vad_ms,
             asr_ms=utt.asr_ms,
             fusion_ms=grounding.fusion_ms,
-            ttft_ms=total_ms,
+            ttft_ms=round(vlm_ms if vlm_ms > 0 else total_ms, 2),
             ttfa_ms=self._utterance_ttfa_ms.get(utt.utterance_id, 0.0),
             total_ms=round(grounding.fusion_ms + total_ms, 2),
             timestamp=time.time(),
@@ -732,7 +829,8 @@ class EgoGazePipeline:
                 locked_obj = self._last_locked_obj
                 coasting = True
             elif sig is not None:
-                searching_label = f"SEARCHING TARGET: {sig.class_name} ({sig.color}) ..."
+                disp = sig.hud_alias or sig.class_name
+                searching_label = f"SEARCHING TARGET: {disp} ({sig.color}) ..."
         else:
             self._last_locked_obj = None
             self._track_trail.clear()
@@ -832,7 +930,17 @@ class EgoGazePipeline:
             cv2.circle(canvas, (cx, cy), 14, hud_color, 1, cv2.LINE_AA)
 
             status_tag = "REACQUIRING" if coasting else "LOCKED"
-            hud_label = f"{status_tag} [{locked_obj.som_id}] {locked_obj.class_name} | {locked_obj.color} | v={locked_obj.velocity_norm:.2f}"
+            sig = self.vision_engine.locked_signature
+            if locked_obj.track_id == 90001:
+                id_tag = "[VLM]"
+                name_tag = (sig.hud_alias if sig and sig.hud_alias else locked_obj.class_name)
+            else:
+                id_tag = f"[{locked_obj.som_id}]"
+                if sig and sig.hud_alias and sig.hud_alias.lower() != locked_obj.class_name.lower():
+                    name_tag = f"{sig.hud_alias} (det:{locked_obj.class_name})"
+                else:
+                    name_tag = locked_obj.class_name
+            hud_label = f"{status_tag} {id_tag} {name_tag} | {locked_obj.color} | v={locked_obj.velocity_norm:.2f}"
             (tw, th), _ = cv2.getTextSize(hud_label, cv2.FONT_HERSHEY_SIMPLEX, 0.56, 2)
             by1 = max(0, ly1 - th - 12)
             cv2.rectangle(canvas, (lx1, by1), (min(w - 1, lx1 + tw + 12), by1 + th + 12), hud_color, -1)

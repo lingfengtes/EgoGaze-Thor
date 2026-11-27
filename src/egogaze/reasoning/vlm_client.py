@@ -6,15 +6,20 @@ to answer open-world visual questions ("我正看着的是什么？", "手的数
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+import cv2
 import httpx
+import numpy as np
 
+from egogaze.core.schemas import GroundingResult, SceneSnapshot
 from egogaze.perception.fom_prompt import FoveatedPromptPack
 
 logger = logging.getLogger("egogaze.vlm")
@@ -249,3 +254,202 @@ class EdgeVLMClient:
             metrics["total_ms"] = round((time.perf_counter_ns() - t0) / 1e6, 2)
 
         return _gen(), metrics
+
+    def locate_track_target(
+        self,
+        utterance_text: str,
+        target_hint: str,
+        frame_bgr: np.ndarray,
+        scene: Optional[SceneSnapshot],
+        grounding: Optional[GroundingResult] = None,
+        max_width: int = 640,
+    ) -> Dict[str, Any]:
+        """System 2 VLM visual verification for open-world / misclassified tracking targets.
+
+        When YOLO misclassifies an object (e.g. apple -> orange) or misses an open-world target completely,
+        renders a clean Set-of-Mark numbered frame and asks qwen3-vl:8b to identify either:
+          1) the exact SoM box ID (`som_id`) that truly contains the requested target, OR
+          2) a normalized bounding box (`bbox_xyxy`) so OpenWorldPatchTracker can lock onto it.
+        """
+        t0 = time.perf_counter_ns()
+        h, w = frame_bgr.shape[:2]
+
+        # Build clean Set-of-Mark verification frame (large crisp [1], [2]... tags so VLM reads IDs accurately)
+        annotated = frame_bgr.copy()
+        legend_lines: List[str] = []
+        valid_som_ids: set[int] = set()
+        if scene and scene.objects:
+            for obj in scene.objects:
+                valid_som_ids.add(obj.som_id)
+                x1, y1, x2, y2 = obj.bbox_xyxy
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (70, 235, 130), 2)
+                tag = f"[{obj.som_id}]"
+                (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.72, 2)
+                by1 = max(0, y1 - th - 10)
+                cv2.rectangle(annotated, (x1, by1), (min(w - 1, x1 + tw + 10), by1 + th + 10), (0, 215, 255), -1)
+                cv2.putText(annotated, tag, (x1 + 5, by1 + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (12, 16, 22), 2, cv2.LINE_AA)
+                legend_lines.append(
+                    f"[{obj.som_id}] det_label={obj.class_name}, color={obj.color}, pos=({obj.center_norm[0]:.2f},{obj.center_norm[1]:.2f})"
+                )
+
+        if grounding and grounding.gaze_centroid and grounding.gaze_reliability >= 0.30:
+            gx, gy = int(grounding.gaze_centroid[0] * w), int(grounding.gaze_centroid[1] * h)
+            cv2.circle(annotated, (gx, gy), 16, (0, 50, 255), 2, cv2.LINE_AA)
+            cv2.line(annotated, (gx - 22, gy), (gx + 22, gy), (0, 50, 255), 2, cv2.LINE_AA)
+            cv2.line(annotated, (gx, gy - 22), (gx, gy + 22), (0, 50, 255), 2, cv2.LINE_AA)
+
+        if w > max_width:
+            scale = max_width / float(w)
+            send_img = cv2.resize(annotated, (max_width, int(h * scale)), interpolation=cv2.INTER_AREA)
+        else:
+            send_img = annotated
+        ok, enc = cv2.imencode(".jpg", send_img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        fsom_b64 = base64.b64encode(enc.tobytes()).decode("ascii") if ok else ""
+
+        if not self.enabled or not (self.mode in ("ollama", "auto") and self._ollama_model_ready()):
+            return {
+                "status": "unavailable",
+                "found": False,
+                "som_id": None,
+                "bbox_xyxy": None,
+                "label": target_hint,
+                "label_en": None,
+                "reason": "VLM backend unavailable",
+                "fsom_b64": fsom_b64,
+                "latency_ms": round((time.perf_counter_ns() - t0) / 1e6, 2),
+                "backend": "unavailable",
+            }
+
+        legend_str = "\n".join(legend_lines) if legend_lines else "(当前检测器未检出任何物体框)"
+        sys_prompt = (
+            "你是第一人称视觉目标定位器。用户想追踪画面中的某个目标物体。\n"
+            "图中绿色框标有醒目黄色编号 [1], [2], ...。\n"
+            "【极其重要】：检测器给出的 det_label 经常误识别（例如把苹果标成 orange 或 sports ball，把笔记本电脑标成 tv，把本子标成 book），"
+            "你必须【完全以图像真实视觉内容】为准，不要被错误的 det_label 误导！\n"
+            "只输出一行合法 JSON（不要 Markdown 代码块、不要多余解释）：\n"
+            "1) 若某个编号框正好框住了用户要找的物体：\n"
+            '{"found": true, "som_id": 编号整数, "bbox_1000": null, "label": "中文物体名", "label_en": "english_name", "reason": "10字以内原因"}\n'
+            "2) 若画面里确实有该物体，但没有任何编号框框住它，请给出它在图像中的边界框（0~1000归一化坐标 [x1,y1,x2,y2]）：\n"
+            '{"found": true, "som_id": null, "bbox_1000": [x1, y1, x2, y2], "label": "中文物体名", "label_en": "english_name", "reason": "10字以内原因"}\n'
+            "3) 若画面里确实没有该物体：\n"
+            '{"found": false, "som_id": null, "bbox_1000": null, "label": null, "label_en": null, "reason": "画面中未看到"}'
+        )
+        user_prompt = (
+            f"用户完整指令：{utterance_text}\n"
+            f"需要定位的目标：{target_hint}\n"
+            f"当前编号框列表（det_label 可能有误，请看图核实）：\n{legend_str}\n"
+            "请输出 JSON："
+        )
+        payload = {
+            "model": self.ollama_model,
+            "stream": False,
+            "keep_alive": "30m",
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt, "images": [fsom_b64]},
+                {"role": "assistant", "content": "<think>\n\n</think>\n"},
+            ],
+            "options": {
+                "num_ctx": 4096,
+                "temperature": 0.1,
+                "top_p": 0.85,
+                "num_predict": 110,
+            },
+        }
+        try:
+            resp = httpx.post(f"{self.ollama_url}/api/chat", json=payload, timeout=25.0)
+            resp.raise_for_status()
+            raw_txt = resp.json().get("message", {}).get("content", "").strip()
+            latency_ms = round((time.perf_counter_ns() - t0) / 1e6, 2)
+            parsed = self._parse_locate_json(raw_txt, valid_som_ids, w, h)
+            parsed["fsom_b64"] = fsom_b64
+            parsed["latency_ms"] = latency_ms
+            parsed["backend"] = f"ollama:{self.ollama_model}"
+            parsed["status"] = "ok"
+            logger.info(
+                "VLM track locate (%s, %.0fms): found=%s som_id=%s bbox=%s label=%s raw=%s",
+                target_hint,
+                latency_ms,
+                parsed["found"],
+                parsed["som_id"],
+                parsed["bbox_xyxy"],
+                parsed["label"],
+                raw_txt[:160],
+            )
+            return parsed
+        except Exception as exc:
+            logger.warning("VLM locate_track_target failed: %s", exc)
+            return {
+                "status": "error",
+                "found": False,
+                "som_id": None,
+                "bbox_xyxy": None,
+                "label": target_hint,
+                "label_en": None,
+                "reason": str(exc),
+                "fsom_b64": fsom_b64,
+                "latency_ms": round((time.perf_counter_ns() - t0) / 1e6, 2),
+                "backend": f"ollama:{self.ollama_model}",
+            }
+
+    @staticmethod
+    def _parse_locate_json(
+        raw_txt: str,
+        valid_som_ids: set[int],
+        img_w: int,
+        img_h: int,
+    ) -> Dict[str, Any]:
+        cleaned = re.sub(r"<think>.*?</think>", "", raw_txt, flags=re.DOTALL).strip()
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE).strip()
+        m = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        data: Dict[str, Any] = {}
+        if m:
+            try:
+                data = json.loads(m.group(0))
+            except Exception:
+                data = {}
+
+        found = bool(data.get("found", False))
+        som_id: Optional[int] = None
+        raw_som = data.get("som_id")
+        if raw_som is not None:
+            m_id = re.search(r"\d+", str(raw_som))
+            if m_id:
+                cand_id = int(m_id.group(0))
+                if cand_id in valid_som_ids:
+                    som_id = cand_id
+                    found = True
+
+        bbox_xyxy: Optional[Tuple[int, int, int, int]] = None
+        raw_box = data.get("bbox_1000") or data.get("bbox_norm") or data.get("bbox")
+        if som_id is None and isinstance(raw_box, (list, tuple)) and len(raw_box) == 4:
+            try:
+                vals = [float(v) for v in raw_box]
+                scale = 1.0 if max(vals) <= 1.05 else 1000.0
+                x1 = int(max(0, min(img_w - 2, vals[0] / scale * img_w)))
+                y1 = int(max(0, min(img_h - 2, vals[1] / scale * img_h)))
+                x2 = int(max(0, min(img_w - 1, vals[2] / scale * img_w)))
+                y2 = int(max(0, min(img_h - 1, vals[3] / scale * img_h)))
+                if x2 - x1 >= 16 and y2 - y1 >= 16:
+                    bbox_xyxy = (x1, y1, x2, y2)
+                    found = True
+            except Exception:
+                bbox_xyxy = None
+
+        if som_id is None and bbox_xyxy is None:
+            found = False
+
+        label = data.get("label")
+        label_en = data.get("label_en")
+        if isinstance(label_en, str):
+            label_en = re.sub(r"[^a-zA-Z0-9_\- ]+", "", label_en).strip()[:24] or None
+        else:
+            label_en = None
+        return {
+            "found": found,
+            "som_id": som_id,
+            "bbox_xyxy": bbox_xyxy,
+            "label": str(label).strip() if label else None,
+            "label_en": label_en,
+            "reason": str(data.get("reason", "")).strip(),
+        }
